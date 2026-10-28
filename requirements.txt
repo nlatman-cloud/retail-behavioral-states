@@ -1,0 +1,14 @@
+# Core analysis (tested with numpy 2.5, pandas 2.3 / 3.0, scipy 1.18, scikit-learn 1.9, matplotlib 3.11, pyarrow 26)
+numpy>=2.0
+pandas>=2.2
+scipy>=1.11
+scikit-learn>=1.4
+matplotlib>=3.8
+pyarrow>=14
+
+# Sequence model in notebook 03 (tested with torch 2.15, CPU is sufficient)
+torch>=2.1
+
+# Running the notebooks
+jupyter
+ipykernel
