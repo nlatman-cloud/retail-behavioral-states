@@ -6,7 +6,7 @@ scikit-learn>=1.4
 matplotlib>=3.8
 pyarrow>=14
 
-# Sequence model in notebook 03 (tested with torch 2.15, CPU is sufficient)
+# Sequence model in notebook 03 (tested with torch 2.14, CPU is sufficient)
 torch>=2.1
 
 # Running the notebooks
