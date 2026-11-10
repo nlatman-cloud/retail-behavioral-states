@@ -1,155 +1,265 @@
 # Behavioral State Modeling Under Distribution Shift
 
-**Can changes in customer behavior be detected, described, and represented as a small set of interpretable behavioral states — and do state-aware models stay more reliable when behavior changes?**
+An analysis of how customer purchasing behavior changes over time, whether these changes can be represented as interpretable behavioral states, and how changing behavior affects the reliability of machine-learning models.
 
-45.8 million retail purchase lines · 400,162 customers · four consecutive 28-day periods · Python, scikit-learn, pandas, one small PyTorch model
+**Key results:** 45.8M retail purchase lines · 400K+ customers · four behavioral states · 0.68 ROC-AUC for predicting state changes · 0.022 additional AUC loss from stale features after state transitions
 
----
+## Overview
 
-## The project in two minutes
+Machine-learning models often rely on historical behavior to make predictions about customers. When that behavior changes, features that previously described a customer well may no longer reflect their current circumstances.
 
-**What I investigated.** Customer behavior changes from month to month. I asked whether that change can be measured reliably, summarized as a few readable *states* with *transitions* between them, and whether models that know about those states stay more reliable when a customer's behavior shifts.
+This project uses retail purchase histories from the X5 Retail Hero dataset to examine three related questions:
 
-**What I found**
+1. How can changes in customer behavior be measured reliably when purchase histories are sparse or incomplete?
+2. Can customer behavior be represented as a small set of interpretable states, and can transitions between those states be predicted?
+3. How does behavioral change affect model reliability, and can state-aware models improve prediction and product targeting?
 
-- **Behavior has real state structure, but noisy edges.** Four states (Inactive, Light, Stock-up, Frequent) describe customers well: 56% stay in the same state from one month to the next, twice the 28% expected by chance. But customers near a state boundary switch 55% of the time versus 19% for those deep inside a state, so much of the observed switching is boundary noise rather than real change.
-- **Several "drift" signals were measurement artifacts.** Part of early-period inactivity was customers who did not have a loyalty card yet. Category drift (Jensen–Shannon distance) looked strongly related to state switching, but most of that link disappears once customers with similar amounts of purchase history are compared: sparse histories produce large drift values on their own.
-- **Transitions can be described by a few readable rules.** An 8-rule decision tree predicts who will switch state next month (AUC 0.68) and works just as well on a later month it never saw.
-- **Models fail in a predictable direction when they miss a change — and the fix is current data, not state labels.** A model built on past behavior is biased toward the customer's *old* state (it under-predicts purchases of customers who just became Frequent by 7 pp). Using the current month removes most of this. Adding explicit state labels on top improves AUC by at most 0.002; a small GRU sequence model adds a small but statistically clear +0.004 for customers who changed state.
-
-**Why it matters.** Understanding *how* conditions change was more valuable here than adding model complexity: the states did not make predictions much better, but they showed exactly which customers a model gets wrong and in which direction. The project also shows that drift measurements themselves need to account for sparse, noisy observation before they can be trusted — a prerequisite for learning formal, verifiable state-transition models.
-
-<p align="center"><img src="figures/C_state_graph.png" width="62%" alt="Empirical state-transition graph between the four behavioral states, arrows colored by origin state"></p>
-
-<p align="center"><img src="figures/E_switch_rules.png" width="90%" alt="The eight decision-tree rules for who switches behavioral state next month, sorted by switch risk"></p>
-
-<p align="center"><img src="figures/F_reliability.png" width="100%" alt="Model ranking quality by group and calibration of stale vs current models"></p>
-
----
-
-## Pipeline
-
-```
-raw transactions → temporal behavior → distribution change → behavioral states → state transitions
-               → interpretable transition rules → global vs state-aware models → product targeting decision
-```
-
-Methods are deliberately lightweight (statistics, scikit-learn, one small PyTorch model) so that every step can be explained.
-
-## Key findings
-
-| # | Finding | Where |
-|---|---|---|
-| 1 | **Part of the "inactivity" is non-observation.** 36% of customers with zero purchases in the first period did not yet have a loyalty card. | 02 §1 |
-| 2 | **Population-level shift is mostly about who is active, not how people shop.** The large E3→E4 shift (SMD 0.3–0.5) disappears among active customers (all \|SMD\| ≤ 0.1), because the sample requires activity in E4. | 02 §2 |
-| 3 | **Four interpretable states:** Inactive, Light (~2 trips/month, small baskets), Stock-up (~3 trips, large baskets), Frequent (~9 trips, medium baskets). Stable across seeds and splits (ARI ≈ 0.99), but a continuum rather than natural clusters (silhouette ≈ 0.34). | 02 §3 |
-| 4 | **States persist, but much switching is boundary noise.** 56% stay in the same state month to month (vs ≈ 28% by chance). Customers near a state boundary switch 55% of the time; those deep inside a state, 19%. | 02 §4 |
-| 5 | **Category drift is confounded by observation depth.** Jensen–Shannon drift separates state switchers from stayers with AUC 0.64, falling to 0.54 once customers with similar history depth are compared. An apparent link between drift and treatment response (2.1 → 4.9 pp) flattens after the same adjustment. | 02 §5 |
-| 6 | **Readable switching rules work modestly and remain stable over time.** An 8-rule decision tree predicts upcoming switches with AUC 0.68 (vs 0.65 for boundary distance alone), with the same accuracy on the later E3→E4 transition. The *destination* state is not predictable beyond "stays put". | 03 §2 |
-| 7 | **Models fail when they have not seen a behavioral change.** A history-only model is biased toward the customer's *old* state: it under-predicts purchases of customers who just became Frequent by 7 pp and over-predicts those who just became Light by 9 pp (95% CIs exclude 0). Using current behavior removes most of this. | 03 §3 |
-| 8 | **Explicit state labels add little once current behavior is used** (AUC change ≤ 0.002). A small PyTorch GRU over the monthly sequence adds a small but statistically clear gain (+0.004 AUC on customers who changed state). The apparent "changed customers are harder to predict" gap (0.082 AUC) is mostly group composition (0.008 within the same state). | 03 §3 |
-| 9 | **The message's effect differs by state:** +5.0 pp for Light customers vs +1.9 pp for Frequent (p < 0.001). States are observed, so this describes *who* responds, not why. | 04 §8 |
-| 10 | **Targeting results were sensitive to random seeds.** Re-running with 10 seeds showed that only the gain at 20–30% contact budgets is consistent (adaptive features win 9/10 seeds); earlier single-run headlines were replaced. A paired bootstrap shows this gain (+46 to +50 purchases per 10K messages at 20–30%) is not statistically distinguishable from zero on the test cohort. | 04 §7, §9 |
-
-**Short answer to the research question:** behavioral change does cause predictable, describable model failures — but in this data the fix is to use current behavior, not to add discrete states. States are most valuable as a *diagnostic lens*: they show which customers a model gets wrong and in which direction.
-
----
+The project combines longitudinal data engineering, statistical drift analysis, unsupervised learning, interpretable transition modeling, and a downstream application using a randomized marketing experiment.
 
 ## Data
 
-[X5 Retail Hero uplift modeling](https://ods.ai/competitions/x5-retailhero-uplift-modeling/data) (Russian grocery retailer, 2019). The data is not included in this repository.
+The analysis uses the [X5 Retail Hero uplift modeling dataset](https://ods.ai/competitions/x5-retailhero-uplift-modeling/data), which contains grocery purchases and a randomized SMS marketing campaign from 2019.
 
-| File | Contents |
+| Dataset | Contents |
 |---|---|
-| `purchases.csv` | 45,786,568 product lines (4.4 GB), 2018-11-21 to 2019-03-18 |
-| `clients.csv` | 400,162 customers, card issue date, age, gender |
-| `products.csv` | product taxonomy (level_2 ≈ 43 categories used) |
-| `uplift_train.csv` | 200,039 customers with randomized SMS treatment and post-campaign purchase outcome |
-| `uplift_test.csv` | 200,123 customers without outcome |
+| `purchases.csv` | 45,786,568 product-line records from November 21, 2018 through March 18, 2019 |
+| `clients.csv` | 400,162 customers, loyalty-card issue date, age, and gender |
+| `products.csv` | Product taxonomy, with approximately 43 category groups used in the analysis |
+| `uplift_train.csv` | 200,039 customers with randomized treatment assignment and a post-campaign purchase outcome |
+| `uplift_test.csv` | 200,123 customers without an observed campaign outcome |
 
-**Design.** Pre-campaign purchase history → randomized message (`treatment_flg`) → purchase afterwards (`target`). History is split into four 28-day periods: E1 (Nov 27 – Dec 24), E2 (Dec 25 – Jan 21), E3 (Jan 22 – Feb 18), E4 (Feb 19 – Mar 18).
+Raw data files are excluded from the repository.
 
-**Data handling to know about**
-- Each row of `purchases.csv` is a product line, and `purchase_sum` repeats across lines of the same basket; transactions are reconstructed before spend is aggregated.
-- All competition customers are active in E4 by construction, so E4 is not a random snapshot.
-- State analysis uses customers whose card existed before E1 (177,600 of 200,039), so that zero purchases mean "inactive", not "not yet a customer".
+### Temporal Design
 
----
+Purchase histories were divided into four consecutive 28-day periods preceding the marketing campaign:
 
-## Notebooks
-
-Run in order. Each section states the question, the method, the result, and its limitations.
-
-| Notebook | Purpose | Runtime* |
-|---|---|---|
-| [`01_data_ingestion`](notebooks/01_data_ingestion.ipynb) | One streaming pass over the 4.4 GB file: transactions, customer-period behavior, temporal change features, category composition, Jensen–Shannon drift, observation-depth check | ~1 min |
-| [`02_drift_and_states`](notebooks/02_drift_and_states.ipynb) | §2 distribution change (SMD, KS) · §3 behavioral states (KMeans) · §4 transition matrices, state graph, boundary noise · §5 do drift measures track state switches? · §7 final figures | ~2 min |
-| [`03_state_aware_modeling`](notebooks/03_state_aware_modeling.ipynb) | §2 interpretable transition rules (decision trees) · §3 global vs state-aware models and a PyTorch GRU, reliability after state change with bootstrap CIs · §4 bridge to formal state-transition modeling | ~1.5 min |
-| [`04_product_targeting`](notebooks/04_product_targeting.ipynb) | Product application: uplift targeting with the randomized experiment, static vs adaptive features, seed sensitivity, paired bootstrap of the policy gain, treatment effect by behavioral state | ~1.5 min |
-
-\*Measured on a laptop-class CPU.
-
-**Evaluation discipline.** One fixed customer split (60/20/20, stratified on treatment × outcome, `random_state=42`) is shared by all notebooks. Scalers, clusters, thresholds and models are fit on training customers; choices are made on validation; the test set is used once per analysis. Results that depend on randomness are repeated across seeds.
-
----
-
-## Methods
-
-| Area | Methods |
+| Period | Dates |
 |---|---|
-| Distribution change | standardized mean difference, Kolmogorov–Smirnov statistic, paired within-customer change |
-| Composition drift | Jensen–Shannon distance between category distributions, stratification by observation depth |
-| States | log transform, StandardScaler, KMeans (K chosen by inertia, silhouette, seed and train→validation stability, interpretability) |
-| Transitions | empirical transition matrices, independence baseline, distance-to-boundary margin, hysteresis threshold |
-| Transition rules | shallow `DecisionTreeClassifier`, temporal hold-out (fit on E1→E3, test on E3→E4) |
-| Prediction reliability | logistic regression, per-state models, HistGradientBoosting, PyTorch GRU; AUC, log loss, calibration gap; paired bootstrap CIs |
-| Causal targeting | randomized treatment-effect estimates, S-/T-learner uplift models, policy value at contact budgets, Qini-style area, paired bootstrap |
+| E1 | Nov 27 – Dec 24, 2018 |
+| E2 | Dec 25, 2018 – Jan 21, 2019 |
+| E3 | Jan 22 – Feb 18, 2019 |
+| E4 | Feb 19 – Mar 18, 2019 |
 
----
+This design makes it possible to compare historical behavior with more recent behavior without using post-campaign information to construct predictors.
 
-## Limitations
+An important limitation is that all competition customers are active in E4 by construction. Consequently, E4 is not an independently sampled snapshot of the customer population.
 
-- One retailer, one campaign, four months. Seasonality (the New Year falls inside E2) cannot be separated from trend.
-- Only one outcome window exists, so changes in P(Y | X) across periods (concept drift in the strict sense) cannot be tested — the project measures covariate shift and model reliability.
-- Behavioral states are observational. Differences in treatment response by state describe *who* responds, not what *causes* response.
-- Transition rules are empirical statistical rules with error rates, not formally specified or verified conditions.
+## Data Engineering and Methodology
 
-## Future work
+### Transaction Reconstruction
 
-The system built here — finite states, empirical transition probabilities, readable transition conditions, per-state models — is an *empirical* finite-state transition system. Natural next steps toward formal, verifiable state-transition models (see notebook 03 §4):
+Each purchase record represents a product line rather than a complete shopping transaction. The `purchase_sum` field repeats across lines within the same basket, so transactions were reconstructed before customer spending was aggregated.
 
-1. express transition conditions in a temporal logic (e.g. Signal Temporal Logic) instead of single-month thresholds;
-2. learn a compact automaton consistent with the observed sequences (automata learning / SMT-based synthesis);
-3. formally check learned conditions for consistency and coverage;
-4. model noise explicitly with probabilistic transitions and drift tests that account for sparse observations;
-5. learn states and per-state models jointly.
+The purchase file was processed in chunks, producing approximately 7.7 million transactions. These transactions were aggregated into customer-period features, including:
 
----
+- Transaction frequency and total spending
+- Average basket spending and basket size
+- Purchase quantity and number of unique products
+- Product-category composition
+- Historical trends, recent deviations, and behavioral instability
 
-## How to run
+This produced approximately 1.6 million customer-period observations across the four time windows.
 
-```bash
-pip install -r requirements.txt
-```
+### Customer Observability
 
-1. Download the five CSV files from the [competition data page](https://ods.ai/competitions/x5-retailhero-uplift-modeling/data) into `data/raw/`.
-2. Run `notebooks/01` → `02` → `03` → `04` in order. Each writes its outputs to `data/processed/` and `figures/`.
+An initial data-quality issue emerged when interpreting periods with no recorded purchases. Approximately 36% of customers with zero purchases in E1 had not yet received a loyalty card.
 
-Notebook 01 reads the purchase file in 1M-row chunks and needs only a few GB of memory. Notebook 03 trains the GRU on one CPU thread (faster than several for a model this small) and caches the five trained seeds in `data/processed/gru_models/`; delete that folder to retrain.
+Treating these customers as inactive would confuse an absence of observed behavior with genuine inactivity. The core state analysis therefore uses customers whose loyalty cards existed before E1 (177,600 of the 200,039 customers with campaign outcomes).
 
-## Repository structure
+A related issue appeared when comparing E3 and E4. The apparent population-level distribution shift was substantially reduced when the comparison was restricted to active customers. This suggests that changes in which customers are observed can account for much of an apparent behavioral shift.
 
-```
-├── data/
-│   ├── raw/                 # downloaded CSVs (not tracked)
-│   └── processed/           # parquet tables and cached GRU models (not tracked)
-├── figures/                 # all saved charts
+## Measuring Behavioral Change
+
+Changes in transaction frequency, spending, and basket characteristics were examined using standardized mean differences, Kolmogorov–Smirnov statistics, and paired within-customer comparisons.
+
+Changes in purchasing composition were measured using Jensen–Shannon distance between product-category distributions.
+
+### Observation Depth and Category Drift
+
+The analysis found that customers with sparse purchase histories tended to have larger measured category drift, even when the observed changes did not provide strong evidence of a behavioral transition.
+
+Before accounting for observation depth, category drift distinguished state switchers from customers who remained in the same state with a ROC-AUC of approximately 0.64. After comparing customers with similar amounts of purchase history, this fell to approximately 0.54.
+
+The result illustrates why drift measurements need to account for the amount of available data. A large measured distribution change may reflect sampling variability rather than a meaningful change in customer behavior.
+
+## Behavioral State Modeling
+
+### Learning Interpretable States
+
+KMeans clustering was used to summarize active customer behavior using three features: transaction frequency, average basket spending, and average unique products per basket.
+
+Features were transformed and standardized before clustering. Candidate cluster counts were compared using inertia, silhouette scores, stability across random seeds, train-to-validation stability, and interpretability of the resulting groups.
+
+Three active states were selected, alongside a rule-defined inactive state:
+
+| State | Typical behavior |
+|---|---|
+| Inactive | No recorded transactions during the period |
+| Light | Approximately 2 shopping trips per period, with small baskets |
+| Stock-up | Approximately 3 trips per period, with large baskets |
+| Frequent | Approximately 9 trips per period, with medium-sized baskets |
+
+The distinction between Stock-up and Frequent customers is particularly useful: customers can reach similar levels of total spending through different purchasing patterns.
+
+The learned active states were stable across seeds and splits (adjusted Rand index approximately 0.99). However, the silhouette score of approximately 0.34 suggests that behavior forms a continuum rather than four naturally separated groups. The states are therefore used as practical summaries of behavior, not as definitive customer types.
+
+### State Transitions
+
+Each customer was assigned a behavioral state in each period, producing sequences such as Light → Light → Stock-up → Frequent.
+
+Empirical transition matrices were constructed to estimate the probability of moving between states. The primary transition analysis uses E1→E2 and E2→E3, avoiding the E4 activity-selection issue.
+
+Approximately 56% of customers remained in the same state from one period to the next, compared with approximately 28% under an independence baseline.
+
+<p align="center"><img src="figures/C_state_graph.png" width="70%" alt="Empirical behavioral state-transition graph"></p>
+
+The state-transition graph represents empirical transition probabilities, rather than a formally verified automaton.
+
+### State Boundaries and Transition Noise
+
+Customers near cluster boundaries switched states more frequently than customers whose behavior was well within a state:
+
+- Near a state boundary: approximately 55% switching rate
+- Deep inside a state: approximately 19% switching rate
+
+This indicates that some observed transitions may reflect small movements around an artificial cluster boundary rather than substantial behavioral change. Distance-to-boundary and hysteresis analyses were used to examine this sensitivity.
+
+## Predicting State Transitions
+
+Shallow decision trees were used to investigate whether transitions could be described and predicted using readable conditions over behavioral features.
+
+The prospective prediction task uses information available in the current period to predict whether a customer will switch states in the following period. This is distinct from descriptive rules that use observed changes between two periods to characterize a transition after it occurs.
+
+An eight-rule decision tree achieved approximately 0.68 ROC-AUC for predicting state switches, compared with approximately 0.65 using boundary distance alone. The model maintained similar discrimination on the later E3→E4 transition.
+
+However, predicting the destination state was substantially more difficult: the destination-state model did not outperform a baseline that assumed customers would remain in their current state.
+
+These results suggest that current behavioral features contain useful information about transition risk, but do not fully determine the direction of future behavioral changes.
+
+## Model Reliability Under Behavioral Change
+
+The next analysis examined whether behavioral change affects the reliability of models predicting post-campaign purchases.
+
+Models compared included logistic regression using historical or current features, models with explicit state labels, separate per-state models, Histogram Gradient Boosting, and a small PyTorch GRU using the monthly behavioral sequence.
+
+### Historical vs. Current Behavior
+
+Models relying on historical features tended to make errors in the direction of customers' previous behavior. For example:
+
+- Customers who became Frequent had their purchase probability underestimated by approximately 7 percentage points.
+- Customers who became Light had their purchase probability overestimated by approximately 9 percentage points.
+
+Using current-period features removed much of this systematic error.
+
+The performance loss associated with stale features was also greater among customers who changed state: the additional ROC-AUC loss was **0.022 (95% bootstrap CI: 0.008–0.034)**.
+
+<p align="center"><img src="figures/F_reliability.png" width="100%" alt="Model discrimination and calibration across stable and changing customers"></p>
+
+### Do State-Aware Models Improve Prediction?
+
+At first, customers who changed states appeared much harder to predict than stable customers, with an overall ROC-AUC gap of approximately 0.082.
+
+However, after accounting for their current behavioral state, the gap fell to approximately 0.008 (95% CI: −0.012 to 0.030). Much of the original difference was attributable to differences in the composition of the two groups rather than evidence of an independent effect of switching states.
+
+Adding explicit state labels to models with current behavioral features improved ROC-AUC by at most 0.002. A GRU trained on the monthly sequence provided a small additional gain of approximately 0.004 among customers who changed state.
+
+The principal finding is that behavioral states were more useful for diagnosing model errors than for improving raw predictive performance. Keeping behavioral features current mattered more than adding discrete state labels or more complex models.
+
+## Product Targeting and Randomized Experimentation
+
+A separate downstream analysis investigated whether behavioral information could improve decisions about which customers should receive a marketing message.
+
+The dataset contains a randomized SMS campaign, making it possible to estimate incremental treatment effects rather than simply predicting which customers are most likely to purchase.
+
+### Treatment Effects by Behavioral State
+
+The campaign increased purchase incidence by approximately 3.32 percentage points overall. Treatment effects differed across the current behavioral states:
+
+| State | Estimated treatment effect |
+|---|---:|
+| Light | +5.0 percentage points |
+| Stock-up | +2.4 percentage points |
+| Frequent | +1.9 percentage points |
+
+The Light–Frequent difference was statistically distinguishable from zero. Because treatment was randomized, these estimates describe how campaign effects vary across observed pre-treatment groups; they do not establish that changing a customer's state would change their treatment response.
+
+### Static vs. Adaptive Targeting
+
+S-learner and T-learner uplift models were compared using static behavioral summaries and adaptive features capturing more recent behavior and temporal change. Targeting strategies were evaluated at several contact budgets using estimated incremental purchases and cumulative incremental-gain curves.
+
+Adaptive features showed the most consistent advantage at 20–30% contact budgets, outperforming static features in 9 of 10 seed runs. On the locked test cohort, the estimated improvements were approximately 46–50 incremental purchases per 10,000 messages at these budgets.
+
+However, paired bootstrap confidence intervals included zero. The results therefore suggest a potential targeting improvement, but do not establish that adaptive targeting is reliably superior.
+
+## Evaluation and Reproducibility
+
+All notebooks share a fixed 60/20/20 customer split, stratified by treatment assignment and outcome. Scalers, clustering models, thresholds, and predictive models are fitted on training customers, with validation used for model-selection decisions and held-out test customers used for evaluation.
+
+The transition prediction analysis additionally evaluates performance on a later time transition. Random-seed sensitivity and paired bootstrap intervals are used to examine uncertainty in key results.
+
+## Practical Implications
+
+The analysis supports several conclusions for customer analytics and model monitoring:
+
+**Distinguish missing observation from genuine behavioral change.** Sparse purchase histories and differences in customer eligibility can inflate drift measurements or make customers appear inactive.
+
+**Use behavioral states to diagnose model failures.** Interpretable states help identify which groups are likely to experience systematic prediction errors when historical features become outdated.
+
+**Prioritize current information over unnecessary complexity.** Updating behavioral features removed much of the observed prediction bias, while explicit state labels and sequence models produced only small additional gains.
+
+**Evaluate decisions separately from prediction accuracy.** A customer who is likely to purchase is not necessarily a customer whose purchase decision can be influenced by a marketing message. Randomized treatment-effect analysis provides a more appropriate framework for evaluating targeting strategies.
+
+## Limitations and Future Work
+
+Several limitations are important:
+
+- The data cover one retailer, one campaign, and four periods. Seasonal effects, including the New Year period, cannot be separated reliably from longer-term trends.
+- E4 activity is required by the dataset's construction, limiting comparisons with earlier periods.
+- Only one post-campaign outcome window is available. The analysis measures covariate shift and model reliability, not changes in the conditional outcome distribution across multiple periods (concept drift in the strict sense).
+- KMeans states are empirical summaries of continuous behavior, and state assignments can be sensitive to boundary noise.
+- Transition rules are statistical predictions with error rates, not formally specified or verified conditions.
+- The targeting improvements remain uncertain on the held-out test cohort.
+
+A natural extension would be to learn more explicit transition conditions over behavioral sequences, represent them using temporal logic, and investigate whether automata learning or formal verification could improve the consistency and interpretability of state-transition systems. Accounting for noisy and sparse observations would be an important part of that extension.
+
+## Repository Structure
+
+```text
+retail-behavioral-states/
 ├── notebooks/
 │   ├── 01_data_ingestion.ipynb
 │   ├── 02_drift_and_states.ipynb
 │   ├── 03_state_aware_modeling.ipynb
-│   ├── 04_product_targeting.ipynb
-│   └── archive/             # earlier drafts, kept as development history
-├── requirements.txt
-└── README.md
+│   └── 04_product_targeting.ipynb
+├── figures/
+├── data/                         # Local only; excluded from Git
+│   ├── raw/
+│   └── processed/
+├── .gitignore
+├── README.md
+└── requirements.txt
 ```
+
+## Reproducing the Analysis
+
+1. Download the five CSV files from the [X5 Retail Hero competition data page](https://ods.ai/competitions/x5-retailhero-uplift-modeling/data).
+2. Place the files in `data/raw/`.
+3. Install dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Run notebooks 01–04 sequentially. The notebooks create processed datasets and figures used in subsequent analyses.
+
+Notebook 01 processes the purchase file in chunks. Notebook 03 trains the GRU on CPU and caches trained models in `data/processed/gru_models/`; delete that directory to retrain them.
+
+## Tools and Technologies
+
+- **Data Analysis:** Python, Pandas, NumPy, SciPy, PyArrow
+- **Statistical Analysis:** Distribution comparisons, Jensen–Shannon distance, bootstrap confidence intervals, randomized treatment-effect estimation
+- **Machine Learning:** scikit-learn, KMeans, Decision Trees, Logistic Regression, Histogram Gradient Boosting, S-/T-learner uplift modeling
+- **Sequence Modeling:** PyTorch GRU
+- **Visualization:** Matplotlib
+- **Version Control:** Git, GitHub
